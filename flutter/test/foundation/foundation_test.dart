@@ -1,7 +1,10 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_hbb/foundation/authentication_foundation.dart';
 import 'package:flutter_hbb/foundation/backend_foundation.dart';
+import 'package:flutter_hbb/foundation/control_plane_foundation.dart';
 import 'package:flutter_hbb/foundation/design_tokens.dart';
 import 'package:flutter_hbb/foundation/device_foundation.dart';
 import 'package:flutter_hbb/foundation/environment.dart';
@@ -10,6 +13,7 @@ import 'package:flutter_hbb/foundation/localization_foundation.dart';
 import 'package:flutter_hbb/foundation/logging_foundation.dart';
 import 'package:flutter_hbb/foundation/product_identity.dart';
 import 'package:flutter_hbb/foundation/session_foundation.dart';
+import 'package:flutter_hbb/foundation/ultimate_remote_ffi.dart';
 
 void main() {
   group('product identity and design tokens', () {
@@ -136,4 +140,225 @@ void main() {
     expect(event.fields['token'], '[REDACTED]');
     expect(event.fields['password'], '[REDACTED]');
   });
+
+  _registerPhase17Tests();
+}
+
+class _FakeFfiApi implements UltimateRemoteFfiApi {
+  bool initialized = false;
+  bool stopped = false;
+  String? createdSessionId;
+
+  @override
+  Future<String> apiVersion() async => '1.0.0';
+
+  @override
+  String initialize() {
+    initialized = true;
+    return '{"ok":true,"value":null}';
+  }
+
+  @override
+  String createSession(String contextJson) {
+    final context = jsonDecode(contextJson) as Map<String, dynamic>;
+    createdSessionId = context['session_id'] as String;
+    return jsonEncode({
+      'ok': true,
+      'value': {
+        'context': {'session_id': createdSessionId},
+        'state': 'Authorized',
+      },
+    });
+  }
+
+  @override
+  String startSession(String sessionId) => jsonEncode({
+        'ok': true,
+        'value': {
+          'context': {'session_id': sessionId},
+          'state': 'Connected',
+        },
+      });
+
+  @override
+  String stopSession(String sessionId) {
+    stopped = true;
+    return jsonEncode({
+      'ok': true,
+      'value': {
+        'context': {'session_id': sessionId},
+        'state': 'Closed',
+      },
+    });
+  }
+
+  @override
+  String drainEvents() => '{"ok":true,"value":[{"kind":"Connected"}]}';
+
+  @override
+  String shutdown() {
+    initialized = false;
+    return '{"ok":true,"value":null}';
+  }
+}
+
+void _addFfiFoundationTests() {
+  group('PHASE 17 control-plane and FFI foundation', () {
+    test('parses backend device and session contracts', () {
+      final device = RemoteDevice.fromBackendJson({
+        'id': 'device-1',
+        'organization_id': 'tenant-1',
+        'device_identifier': 'stable-device-1',
+        'name': 'Linux host',
+        'platform': 'linux',
+        'status': 'ONLINE',
+      });
+      final session = RemoteSession.fromBackendJson({
+        'id': 'session-1',
+        'organization_id': 'tenant-1',
+        'device_id': device.id,
+        'source_device_id': 'source-1',
+        'initiated_by': 'user-1',
+        'status': 'AUTHORIZED',
+        'authorization_state': 'AUTHORIZED',
+        'correlation_id': 'correlation-1',
+        'created_at': '2026-08-27T00:00:00Z',
+      });
+
+      expect(device.organizationId, 'tenant-1');
+      expect(device.status, RemoteDeviceStatus.online);
+      expect(session.state, RemoteSessionState.authorized);
+      expect(session.sourceDeviceId, 'source-1');
+      expect(session.correlationId, 'correlation-1');
+    });
+
+    test('requires backend authorization and protects FFI lifecycle', () {
+      final fake = _FakeFfiApi();
+      final controller = UltimateRemoteFfiSessionController(fake);
+      final unauthorized = const RemoteSession(
+        id: 'session-1',
+        deviceId: 'device-1',
+      );
+      expect(
+        () => controller.createSession(unauthorized),
+        throwsA(isA<RemoteControlException>()),
+      );
+
+      controller.initialize();
+      final authorized = const RemoteSession(
+        id: 'session-1',
+        deviceId: 'device-1',
+        organizationId: 'tenant-1',
+        userId: 'user-1',
+        correlationId: 'correlation-1',
+        authorizationState: 'AUTHORIZED',
+      );
+      expect(controller.createSession(authorized).state,
+          RemoteSessionState.authorized);
+      expect(controller.startSession(authorized).state,
+          RemoteSessionState.connected);
+      expect(
+          controller.stopSession(authorized).state, RemoteSessionState.closed);
+      expect(controller.drainEvents(), hasLength(1));
+      controller.shutdown();
+      expect(fake.stopped, isTrue);
+      expect(() => controller.shutdown(), returnsNormally);
+    });
+
+    test('completes the local control-plane to FFI core flow', () async {
+      final controlPlane = RemoteControlPlaneClient(_FakeBackendClient());
+      final devices = await controlPlane.listDevices();
+      expect(devices.single.id, 'device-1');
+      final backendSession = await controlPlane.createSession(
+        devices.single.id,
+        sourceDeviceId: 'source-1',
+      );
+
+      final ffi = UltimateRemoteFfiSessionController(_FakeFfiApi());
+      ffi.initialize();
+      final localSession = ffi.createSession(backendSession);
+      expect(localSession.state, RemoteSessionState.authorized);
+      expect(
+          ffi.startSession(localSession).state, RemoteSessionState.connected);
+      expect(ffi.stopSession(localSession).state, RemoteSessionState.closed);
+      ffi.shutdown();
+    });
+  });
+}
+
+void _registerPhase17Tests() {
+  _addFfiFoundationTests();
+}
+
+class _FakeBackendClient implements RemoteBackendClient {
+  @override
+  RemoteEnvironmentConfig get environment => RemoteEnvironmentConfig(
+        environment: RemoteEnvironment.development,
+        apiEndpoint: Uri.parse('http://localhost:8080/api'),
+      );
+
+  @override
+  Future<RemoteApiResponse> send(RemoteApiRequest request) async {
+    if (request.method == 'GET' && request.path == '/api/v1/devices') {
+      return const RemoteApiResponse(
+        statusCode: 200,
+        body: <String, Object?>{
+          'items': <Object?>[
+            <String, Object?>{
+              'id': 'device-1',
+              'organization_id': 'tenant-1',
+              'device_identifier': 'stable-device-1',
+              'name': 'Target',
+              'platform': 'linux',
+              'status': 'ONLINE',
+            },
+          ],
+        },
+      );
+    }
+    if (request.method == 'POST' && request.path == '/api/v1/sessions') {
+      return const RemoteApiResponse(
+        statusCode: 201,
+        body: <String, Object?>{
+          'id': 'session-1',
+          'organization_id': 'tenant-1',
+          'device_id': 'device-1',
+          'source_device_id': 'source-1',
+          'initiated_by': 'user-1',
+          'status': 'REQUESTED',
+          'authorization_state': 'AUTHORIZED',
+          'correlation_id': 'correlation-1',
+          'created_at': '2026-08-27T00:00:00Z',
+        },
+      );
+    }
+    if (request.path.endsWith('/start')) {
+      return const RemoteApiResponse(
+        statusCode: 200,
+        body: <String, Object?>{
+          'id': 'session-1',
+          'organization_id': 'tenant-1',
+          'device_id': 'device-1',
+          'initiated_by': 'user-1',
+          'status': 'CONNECTING',
+          'authorization_state': 'AUTHORIZED',
+          'correlation_id': 'correlation-1',
+          'created_at': '2026-08-27T00:00:00Z',
+        },
+      );
+    }
+    return const RemoteApiResponse(
+      statusCode: 200,
+      body: <String, Object?>{
+        'id': 'session-1',
+        'organization_id': 'tenant-1',
+        'device_id': 'device-1',
+        'initiated_by': 'user-1',
+        'status': 'CLOSED',
+        'authorization_state': 'AUTHORIZED',
+        'correlation_id': 'correlation-1',
+        'created_at': '2026-08-27T00:00:00Z',
+      },
+    );
+  }
 }

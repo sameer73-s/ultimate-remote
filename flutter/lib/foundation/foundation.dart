@@ -1,9 +1,11 @@
 export 'authentication_foundation.dart';
+export 'control_plane_foundation.dart';
 export 'backend_foundation.dart';
 export 'design_tokens.dart';
 export 'device_foundation.dart';
 export 'environment.dart';
 export 'error_foundation.dart';
+export 'ultimate_remote_ffi.dart';
 export 'localization_foundation.dart';
 export 'logging_foundation.dart';
 export 'product_identity.dart';

@@ -2,6 +2,10 @@
 use crate::keyboard::input_source::{change_input_source, get_cur_session_input_source};
 #[cfg(target_os = "linux")]
 use crate::platform::linux::is_x11;
+use crate::ultimate_remote_adapter::{
+    LocalCoreBoundary, UltimateRemoteError, UltimateRemoteEvent, UltimateRemoteRustAdapter,
+    UltimateRemoteSession, UltimateRemoteSessionContext, FFI_CONTRACT_VERSION,
+};
 use crate::{
     client::file_trait::FileManager,
     common::{make_fd_to_json, make_vec_fd_to_json},
@@ -23,7 +27,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicI32, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::{Duration, SystemTime},
 };
@@ -3009,4 +3013,86 @@ pub mod server_side {
     ) -> jboolean {
         jboolean::from(crate::server::is_clipboard_service_ok())
     }
+}
+
+
+lazy_static::lazy_static! {
+    static ref ULTIMATE_REMOTE_ADAPTER: Mutex<Option<Arc<UltimateRemoteRustAdapter<LocalCoreBoundary>>>> =
+        Mutex::new(None);
+}
+
+fn ultimate_remote_adapter() -> Result<Arc<UltimateRemoteRustAdapter<LocalCoreBoundary>>, UltimateRemoteError> {
+    ULTIMATE_REMOTE_ADAPTER
+        .lock()
+        .map_err(|_| UltimateRemoteError {
+            code: crate::ultimate_remote_adapter::UltimateRemoteErrorCode::Internal,
+            message: "FFI adapter state is unavailable".to_owned(),
+        })?
+        .clone()
+        .ok_or_else(|| UltimateRemoteError {
+            code: crate::ultimate_remote_adapter::UltimateRemoteErrorCode::FfiInitializationFailed,
+            message: "FFI adapter has not been initialized".to_owned(),
+        })
+}
+
+pub fn ultimate_remote_api_version() -> String {
+    FFI_CONTRACT_VERSION.to_owned()
+}
+
+fn ffi_error_json(error: UltimateRemoteError) -> String {
+    serde_json::json!({"ok": false, "error": error}).to_string()
+}
+
+fn ffi_value_json<T: serde::Serialize>(value: T) -> String {
+    serde_json::json!({"ok": true, "value": value}).to_string()
+}
+
+fn ffi_context_json(value: String) -> Result<UltimateRemoteSessionContext, UltimateRemoteError> {
+    serde_json::from_str(&value).map_err(|_| UltimateRemoteError {
+        code: crate::ultimate_remote_adapter::UltimateRemoteErrorCode::InvalidInput,
+        message: "Invalid session context".to_owned(),
+    })
+}
+
+pub fn ultimate_remote_initialize() -> SyncReturn<String> {
+    let result = (|| {
+        let adapter = {
+            let mut slot = ULTIMATE_REMOTE_ADAPTER.lock().map_err(|_| UltimateRemoteError {
+                code: crate::ultimate_remote_adapter::UltimateRemoteErrorCode::Internal,
+                message: "FFI adapter state is unavailable".to_owned(),
+            })?;
+            slot.get_or_insert_with(|| {
+                Arc::new(UltimateRemoteRustAdapter::new(Arc::new(LocalCoreBoundary::default())))
+            })
+            .clone()
+        };
+        adapter.initialize()
+    })();
+    SyncReturn(result.map_or_else(ffi_error_json, ffi_value_json))
+}
+
+pub fn ultimate_remote_session_create(context_json: String) -> SyncReturn<String> {
+    let result = ultimate_remote_adapter()
+        .and_then(|adapter| ffi_context_json(context_json).and_then(|context| adapter.create_session(context)));
+    SyncReturn(result.map_or_else(ffi_error_json, ffi_value_json))
+}
+
+pub fn ultimate_remote_session_start(session_id: String) -> SyncReturn<String> {
+    let result = ultimate_remote_adapter().and_then(|adapter| adapter.start_session(&session_id));
+    SyncReturn(result.map_or_else(ffi_error_json, ffi_value_json))
+}
+
+pub fn ultimate_remote_session_stop(session_id: String) -> SyncReturn<String> {
+    let result = ultimate_remote_adapter().and_then(|adapter| adapter.stop_session(&session_id));
+    SyncReturn(result.map_or_else(ffi_error_json, ffi_value_json))
+}
+
+pub fn ultimate_remote_drain_events() -> SyncReturn<String> {
+    let result = ultimate_remote_adapter().and_then(|adapter| adapter.drain_events());
+    SyncReturn(result.map_or_else(ffi_error_json, ffi_value_json))
+}
+
+pub fn ultimate_remote_shutdown() -> SyncReturn<String> {
+    let result = ultimate_remote_adapter().and_then(|adapter| adapter.shutdown());
+    SyncReturn(result.map_or_else(ffi_error_json, ffi_value_json))
 }
