@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -288,6 +289,39 @@ void transportTests() {
       throwsA(isA<ApiError>()),
     );
     expect(await storage.read(), isNull);
+  });
+
+  test('concurrent refresh calls share one in-flight request', () async {
+    final storage = MemorySecureTokenStorage();
+    final refreshRelease = Completer<void>();
+    var refreshCalls = 0;
+    final client = BackendApiClient(
+      HttpBackendClient(
+        environment: testEnvironment(),
+        httpClient: MockClient((request) async {
+          if (request.url.path.endsWith('/auth/login')) {
+            return http.Response(
+                jsonEncode(authJson('access-1', 'refresh-1')), 200);
+          }
+          if (request.url.path.endsWith('/auth/refresh')) {
+            refreshCalls += 1;
+            await refreshRelease.future;
+            return http.Response(
+                jsonEncode(authJson('access-2', 'refresh-2')), 200);
+          }
+          return http.Response('{}', 204);
+        }),
+      ),
+    );
+    final manager = AuthSessionManager(client: client, storage: storage);
+    await manager.login('a@example.com', 'password-a');
+    final first = manager.refresh();
+    final second = manager.refresh();
+    await Future<void>.delayed(Duration.zero);
+    expect(refreshCalls, 1);
+    refreshRelease.complete();
+    await Future.wait([first, second]);
+    expect((await storage.read())?.refreshToken, 'refresh-2');
   });
 
   test('logout clears secure token abstraction even when server rejects',

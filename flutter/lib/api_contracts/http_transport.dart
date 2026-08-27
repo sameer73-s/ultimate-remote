@@ -155,6 +155,7 @@ class AuthSessionManager {
 
   final BackendApiClient client;
   final SecureTokenStorage storage;
+  Future<AuthResponseContract>? _refreshInFlight;
 
   Future<AuthResponseContract> login(String email, String password) async {
     final response = await client.request(
@@ -194,7 +195,7 @@ class AuthSessionManager {
       );
     } on ApiError catch (error) {
       if (error.statusCode != 401) rethrow;
-      final refreshed = await _refreshOrClear(tokens.refreshToken);
+      final refreshed = await _refreshWithCoalescing(tokens.refreshToken);
       return client.request(
         method,
         path,
@@ -215,7 +216,21 @@ class AuthSessionManager {
         requestId: '',
       );
     }
-    return _refreshOrClear(tokens.refreshToken);
+    return _refreshWithCoalescing(tokens.refreshToken);
+  }
+
+  Future<AuthResponseContract> _refreshWithCoalescing(String refreshToken) {
+    final inFlight = _refreshInFlight;
+    if (inFlight != null) {
+      return inFlight;
+    }
+    final refreshFuture = _refreshOrClear(refreshToken);
+    _refreshInFlight = refreshFuture;
+    return refreshFuture.whenComplete(() {
+      if (identical(_refreshInFlight, refreshFuture)) {
+        _refreshInFlight = null;
+      }
+    });
   }
 
   Future<AuthResponseContract> _refreshOrClear(String refreshToken) async {
