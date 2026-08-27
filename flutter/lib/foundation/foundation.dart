@@ -9,4 +9,5 @@ export 'ultimate_remote_ffi.dart';
 export 'localization_foundation.dart';
 export 'logging_foundation.dart';
 export 'product_identity.dart';
+export 'networking_foundation.dart';
 export 'session_foundation.dart';

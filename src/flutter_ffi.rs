@@ -6,6 +6,10 @@ use crate::ultimate_remote_adapter::{
     LocalCoreBoundary, UltimateRemoteError, UltimateRemoteEvent, UltimateRemoteRustAdapter,
     UltimateRemoteSession, UltimateRemoteSessionContext, FFI_CONTRACT_VERSION,
 };
+use crate::ultimate_remote_network::{
+    CancellationToken, ConnectionIntent, NetworkAttemptReport, NetworkError, NetworkErrorCode,
+    NETWORK_CONTRACT_VERSION,
+};
 use crate::{
     client::file_trait::FileManager,
     common::{make_fd_to_json, make_vec_fd_to_json},
@@ -3095,4 +3099,49 @@ pub fn ultimate_remote_drain_events() -> SyncReturn<String> {
 pub fn ultimate_remote_shutdown() -> SyncReturn<String> {
     let result = ultimate_remote_adapter().and_then(|adapter| adapter.shutdown());
     SyncReturn(result.map_or_else(ffi_error_json, ffi_value_json))
+}
+
+pub fn ultimate_remote_network_api_version() -> String {
+    NETWORK_CONTRACT_VERSION.to_owned()
+}
+
+pub fn ultimate_remote_network_connect(
+    intent_json: String,
+    now_ms: u64,
+    cancelled: bool,
+) -> SyncReturn<String> {
+    let result = serde_json::from_str::<ConnectionIntent>(&intent_json).map_err(|_| NetworkError {
+        code: NetworkErrorCode::InvalidIntent,
+        message: "Invalid connection intent".to_owned(),
+    });
+    let report = match result {
+        Ok(intent) => match ultimate_remote_adapter().and_then(|adapter| {
+            adapter.connect_network(intent, now_ms, &CancellationToken::from(cancelled))
+        }) {
+            Ok(report) => report,
+            Err(_) => NetworkAttemptReport {
+                connection: None,
+                events: Vec::new(),
+                error: Some(NetworkError {
+                    code: NetworkErrorCode::NetworkInternalError,
+                    message: "Network adapter is unavailable".to_owned(),
+                }),
+            },
+        },
+        Err(error) => NetworkAttemptReport {
+            connection: None,
+            events: Vec::new(),
+            error: Some(error),
+        },
+    };
+    let ok = report.error.is_none();
+    SyncReturn(
+        serde_json::json!({
+            "ok": ok,
+            "events": report.events,
+            "connection": report.connection,
+            "error": report.error,
+        })
+        .to_string(),
+    )
 }

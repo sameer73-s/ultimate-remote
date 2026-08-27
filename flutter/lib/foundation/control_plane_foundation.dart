@@ -1,6 +1,7 @@
 import 'backend_foundation.dart';
 import 'device_foundation.dart';
 import 'error_foundation.dart';
+import 'networking_foundation.dart';
 import 'session_foundation.dart';
 
 class RemoteControlPlaneException implements Exception {
@@ -69,6 +70,30 @@ class RemoteControlPlaneClient
       RemoteApiRequest(method: 'GET', path: '/api/v1/sessions/$sessionId'),
     );
     return RemoteSession.fromBackendJson(body);
+  }
+
+  Future<RemoteConnectionIntent> getConnectionIntent(
+    RemoteSession session,
+  ) async {
+    final body = await _request(
+      RemoteApiRequest(
+        method: 'GET',
+        path: '/api/v1/sessions/${session.id}/connection-intent',
+      ),
+    );
+    final intent = RemoteConnectionIntent.fromBackendJson(body);
+    if (intent.sessionId != session.id ||
+        intent.targetDeviceId != session.deviceId) {
+      throw const RemoteControlPlaneException(
+        RemoteError(
+          kind: RemoteErrorKind.authorization,
+          code: 'CONNECTION_INTENT_MISMATCH',
+          message:
+              'The connection intent did not match the authorized session.',
+        ),
+      );
+    }
+    return intent;
   }
 
   @override

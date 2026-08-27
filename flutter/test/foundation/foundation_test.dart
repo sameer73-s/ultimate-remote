@@ -12,6 +12,7 @@ import 'package:flutter_hbb/foundation/error_foundation.dart';
 import 'package:flutter_hbb/foundation/localization_foundation.dart';
 import 'package:flutter_hbb/foundation/logging_foundation.dart';
 import 'package:flutter_hbb/foundation/product_identity.dart';
+import 'package:flutter_hbb/foundation/networking_foundation.dart';
 import 'package:flutter_hbb/foundation/session_foundation.dart';
 import 'package:flutter_hbb/foundation/ultimate_remote_ffi.dart';
 
@@ -147,7 +148,9 @@ void main() {
 class _FakeFfiApi implements UltimateRemoteFfiApi {
   bool initialized = false;
   bool stopped = false;
+  int networkCalls = 0;
   String? createdSessionId;
+  String? networkResponse;
 
   @override
   Future<String> apiVersion() async => '1.0.0';
@@ -199,6 +202,35 @@ class _FakeFfiApi implements UltimateRemoteFfiApi {
   String shutdown() {
     initialized = false;
     return '{"ok":true,"value":null}';
+  }
+
+  @override
+  Future<String> networkApiVersion() async => '1.0.0';
+
+  @override
+  String networkConnect({
+    required String intentJson,
+    required int nowMs,
+    required bool cancelled,
+  }) {
+    networkCalls += 1;
+    if (networkResponse != null) return networkResponse!;
+    final intent = jsonDecode(intentJson) as Map<String, dynamic>;
+    return jsonEncode({
+      'ok': true,
+      'events': [
+        {
+          'session_id': intent['session_id'],
+          'target_device_id': intent['target_device_id'],
+          'correlation_id': intent['correlation_id'],
+          'state': 'CONNECTED',
+          'connection_path': 'DIRECT',
+          'relay_used': false,
+        },
+      ],
+      'connection': null,
+      'error': null,
+    });
   }
 }
 
@@ -265,6 +297,148 @@ void _addFfiFoundationTests() {
       expect(() => controller.shutdown(), returnsNormally);
     });
 
+    test('maps an authorized backend connection intent', () async {
+      final controlPlane = RemoteControlPlaneClient(_FakeBackendClient());
+      final session = const RemoteSession(
+        id: 'session-1',
+        deviceId: 'device-1',
+      );
+      final intent = await controlPlane.getConnectionIntent(session);
+      expect(intent.sessionId, session.id);
+      expect(intent.targetDeviceId, session.deviceId);
+      expect(intent.allowedPaths, <RemoteConnectionPath>[
+        RemoteConnectionPath.direct,
+        RemoteConnectionPath.natTraversal,
+        RemoteConnectionPath.relay,
+      ]);
+    });
+
+    test('rejects a mismatched network intent before native invocation', () {
+      final fake = _FakeFfiApi();
+      final controller = UltimateRemoteFfiSessionController(fake);
+      controller.initialize();
+      const session = RemoteSession(
+        id: 'session-1',
+        deviceId: 'device-1',
+        organizationId: 'tenant-1',
+        userId: 'user-1',
+        correlationId: 'correlation-1',
+        authorizationState: 'AUTHORIZED',
+      );
+      controller.createSession(session);
+      final intent = RemoteConnectionIntent(
+        sessionId: 'session-1',
+        targetDeviceId: 'other-device',
+        correlationId: 'correlation-1',
+        deadlineAt: DateTime(2026, 8, 27),
+      );
+      expect(
+        () => controller.connectNetwork(session, intent),
+        throwsA(isA<RemoteControlException>().having(
+          (error) => error.error.code,
+          'code',
+          'NETWORK_INTENT_MISMATCH',
+        )),
+      );
+      expect(fake.networkCalls, 0);
+    });
+
+    test('maps direct, NAT, and relay events and preserves relay usage', () {
+      final fake = _FakeFfiApi()
+        ..networkResponse = jsonEncode({
+          'ok': true,
+          'events': [
+            {
+              'session_id': 'session-1',
+              'target_device_id': 'device-1',
+              'correlation_id': 'correlation-1',
+              'state': 'DIRECT_FAILED',
+              'connection_path': 'DIRECT',
+              'relay_used': false,
+            },
+            {
+              'session_id': 'session-1',
+              'target_device_id': 'device-1',
+              'correlation_id': 'correlation-1',
+              'state': 'NAT_FAILED',
+              'connection_path': 'NAT_TRAVERSAL',
+              'relay_used': false,
+            },
+            {
+              'session_id': 'session-1',
+              'target_device_id': 'device-1',
+              'correlation_id': 'correlation-1',
+              'state': 'CONNECTED',
+              'connection_path': 'RELAY',
+              'relay_used': true,
+            },
+          ],
+          'connection': null,
+          'error': null,
+        });
+      final controller = UltimateRemoteFfiSessionController(fake);
+      controller.initialize();
+      const session = RemoteSession(
+        id: 'session-1',
+        deviceId: 'device-1',
+        organizationId: 'tenant-1',
+        userId: 'user-1',
+        correlationId: 'correlation-1',
+        authorizationState: 'AUTHORIZED',
+      );
+      controller.createSession(session);
+      final intent = RemoteConnectionIntent(
+        sessionId: 'session-1',
+        targetDeviceId: 'device-1',
+        correlationId: 'correlation-1',
+        deadlineAt: DateTime(2026, 8, 27),
+      );
+      final events = controller.connectNetwork(session, intent);
+      expect(events.map((event) => event.path), [
+        RemoteConnectionPath.direct,
+        RemoteConnectionPath.natTraversal,
+        RemoteConnectionPath.relay,
+      ]);
+      expect(events.map((event) => event.state), [
+        RemoteConnectionState.directFailed,
+        RemoteConnectionState.natFailed,
+        RemoteConnectionState.connected,
+      ]);
+      expect(events.last.relayUsed, isTrue);
+    });
+
+    test('maps network failures to a generic safe Flutter error', () {
+      final fake = _FakeFfiApi()
+        ..networkResponse =
+            '{"ok":false,"events":[],"error":{"code":"RENDEZVOUS_UNAVAILABLE","message":"internal detail"}}';
+      final controller = UltimateRemoteFfiSessionController(fake);
+      controller.initialize();
+      const session = RemoteSession(
+        id: 'session-1',
+        deviceId: 'device-1',
+        organizationId: 'tenant-1',
+        userId: 'user-1',
+        correlationId: 'correlation-1',
+        authorizationState: 'AUTHORIZED',
+      );
+      controller.createSession(session);
+      final intent = RemoteConnectionIntent(
+        sessionId: 'session-1',
+        targetDeviceId: 'device-1',
+        correlationId: 'correlation-1',
+        deadlineAt: DateTime(2026, 8, 27),
+      );
+      expect(
+        () => controller.connectNetwork(session, intent),
+        throwsA(isA<RemoteControlException>().having(
+          (error) => error.error.message,
+          'message',
+          isNot(contains('internal detail')),
+        )),
+      );
+      expect(fake.networkCalls, 1);
+    });
+
     test('completes the local control-plane to FFI core flow', () async {
       final controlPlane = RemoteControlPlaneClient(_FakeBackendClient());
       final devices = await controlPlane.listDevices();
@@ -273,11 +447,15 @@ void _addFfiFoundationTests() {
         devices.single.id,
         sourceDeviceId: 'source-1',
       );
+      final intent = await controlPlane.getConnectionIntent(backendSession);
 
       final ffi = UltimateRemoteFfiSessionController(_FakeFfiApi());
       ffi.initialize();
       final localSession = ffi.createSession(backendSession);
       expect(localSession.state, RemoteSessionState.authorized);
+      final networkEvents = ffi.connectNetwork(localSession, intent);
+      expect(networkEvents.single.state, RemoteConnectionState.connected);
+      expect(networkEvents.single.path, RemoteConnectionPath.direct);
       expect(
           ffi.startSession(localSession).state, RemoteSessionState.connected);
       expect(ffi.stopSession(localSession).state, RemoteSessionState.closed);
@@ -329,6 +507,20 @@ class _FakeBackendClient implements RemoteBackendClient {
           'authorization_state': 'AUTHORIZED',
           'correlation_id': 'correlation-1',
           'created_at': '2026-08-27T00:00:00Z',
+        },
+      );
+    }
+    if (request.method == 'GET' &&
+        request.path.endsWith('/connection-intent')) {
+      return const RemoteApiResponse(
+        statusCode: 200,
+        body: <String, Object?>{
+          'session_id': 'session-1',
+          'target_device_id': 'device-1',
+          'source_device_id': 'source-1',
+          'correlation_id': 'correlation-1',
+          'deadline_at': '2026-08-27T01:00:00Z',
+          'allowed_paths': <Object?>['DIRECT', 'NAT_TRAVERSAL', 'RELAY'],
         },
       );
     }

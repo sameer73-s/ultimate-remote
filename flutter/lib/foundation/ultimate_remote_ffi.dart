@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import '../generated_bridge.dart';
 import 'error_foundation.dart';
+import 'networking_foundation.dart';
 import 'session_foundation.dart';
 
 abstract interface class UltimateRemoteFfiApi {
@@ -18,6 +19,14 @@ abstract interface class UltimateRemoteFfiApi {
   String drainEvents();
 
   String shutdown();
+
+  Future<String> networkApiVersion();
+
+  String networkConnect({
+    required String intentJson,
+    required int nowMs,
+    required bool cancelled,
+  });
 }
 
 class GeneratedUltimateRemoteFfiApi implements UltimateRemoteFfiApi {
@@ -48,6 +57,22 @@ class GeneratedUltimateRemoteFfiApi implements UltimateRemoteFfiApi {
 
   @override
   String shutdown() => binding.ultimateRemoteShutdown();
+
+  @override
+  Future<String> networkApiVersion() =>
+      binding.ultimateRemoteNetworkApiVersion();
+
+  @override
+  String networkConnect({
+    required String intentJson,
+    required int nowMs,
+    required bool cancelled,
+  }) =>
+      binding.ultimateRemoteNetworkConnect(
+        intentJson: intentJson,
+        nowMs: nowMs,
+        cancelled: cancelled,
+      );
 }
 
 /// Narrow local-core boundary. The backend remains the authorization control plane.
@@ -123,6 +148,62 @@ class UltimateRemoteFfiSessionController {
         .whereType<Map>()
         .map((event) => Map<String, dynamic>.from(event))
         .toList(growable: false);
+  }
+
+  List<RemoteConnectionEvent> connectNetwork(
+    RemoteSession session,
+    RemoteConnectionIntent intent, {
+    DateTime? now,
+    bool cancelled = false,
+  }) {
+    _ensureReady();
+    if (intent.sessionId != session.id ||
+        intent.targetDeviceId != session.deviceId) {
+      throw const RemoteControlException(
+        RemoteError(
+          kind: RemoteErrorKind.authorization,
+          code: 'NETWORK_INTENT_MISMATCH',
+          message: 'The network intent did not match the session.',
+        ),
+      );
+    }
+    final payload = <String, Object?>{
+      'session_id': intent.sessionId,
+      'organization_id': session.organizationId,
+      'user_id': session.userId,
+      'target_device_id': intent.targetDeviceId,
+      'correlation_id': intent.correlationId,
+      'deadline_at_ms': intent.deadlineAt.millisecondsSinceEpoch,
+      'backend_authorized':
+          session.authorizationState.toUpperCase() == 'AUTHORIZED',
+    };
+    final decoded = _decode(
+      api.networkConnect(
+        intentJson: jsonEncode(payload),
+        nowMs: (now ?? DateTime.now().toUtc()).millisecondsSinceEpoch,
+        cancelled: cancelled,
+      ),
+    );
+    final events = (decoded['events'] as List<dynamic>? ?? const <dynamic>[])
+        .whereType<Map>()
+        .map((event) => RemoteConnectionEvent.fromJson(
+              Map<String, dynamic>.from(event),
+            ))
+        .toList(growable: false);
+    if (decoded['ok'] != true) {
+      final error = decoded['error'];
+      final errorMap =
+          error is Map ? Map<String, dynamic>.from(error) : const {};
+      throw RemoteControlException(
+        RemoteError(
+          kind: RemoteErrorKind.network,
+          code: errorMap['code'] as String? ?? 'NETWORK_ERROR',
+          message: 'The network operation could not be completed.',
+          retryable: true,
+        ),
+      );
+    }
+    return events;
   }
 
   void shutdown() {

@@ -42,6 +42,7 @@ mod clipboard;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod core_main;
 pub mod ultimate_remote_adapter;
+pub mod ultimate_remote_network;
 mod custom_server;
 mod lang;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]

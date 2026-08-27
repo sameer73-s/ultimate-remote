@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use crate::ultimate_remote_network::{
+    fail_closed_connect, CancellationToken, ConnectionIntent, NetworkAttemptReport,
+};
+
 pub const FFI_CONTRACT_VERSION: &str = "1.0.0";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -122,6 +126,10 @@ pub trait RustDeskCoreBoundary: Send + Sync + 'static {
     fn start_session(&self, session_id: &str)
         -> Result<UltimateRemoteSession, UltimateRemoteError>;
     fn stop_session(&self, session_id: &str) -> Result<UltimateRemoteSession, UltimateRemoteError>;
+    fn session_context(
+        &self,
+        session_id: &str,
+    ) -> Result<UltimateRemoteSessionContext, UltimateRemoteError>;
     fn shutdown(&self) -> Result<(), UltimateRemoteError>;
 }
 
@@ -222,6 +230,28 @@ impl RustDeskCoreBoundary for LocalCoreBoundary {
             session.state = UltimateRemoteSessionState::Closed;
         }
         Ok(session.clone())
+    }
+
+    fn session_context(
+        &self,
+        session_id: &str,
+    ) -> Result<UltimateRemoteSessionContext, UltimateRemoteError> {
+        self.sessions
+            .lock()
+            .map_err(|_| {
+                UltimateRemoteError::new(
+                    UltimateRemoteErrorCode::Internal,
+                    "Session registry is unavailable",
+                )
+            })?
+            .get(session_id)
+            .map(|session| session.context.clone())
+            .ok_or_else(|| {
+                UltimateRemoteError::new(
+                    UltimateRemoteErrorCode::SessionNotFound,
+                    "Session not found",
+                )
+            })
     }
 
     fn shutdown(&self) -> Result<(), UltimateRemoteError> {
@@ -341,6 +371,50 @@ impl<B: RustDeskCoreBoundary> UltimateRemoteRustAdapter<B> {
         Ok(session)
     }
 
+    pub fn connect_network(
+        &self,
+        intent: ConnectionIntent,
+        now_ms: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<NetworkAttemptReport, UltimateRemoteError> {
+        self.ensure_running()?;
+        let context = self.backend.session_context(&intent.session_id)?;
+        if context.organization_id != intent.organization_id
+            || context.user_id != intent.user_id
+            || context.target_device_id != intent.target_device_id
+            || context.correlation_id != intent.correlation_id
+            || !context.backend_authorized
+            || !intent.backend_authorized
+        {
+            return Err(UltimateRemoteError::new(
+                UltimateRemoteErrorCode::AuthorizationRequired,
+                "Network intent does not match the authorized session",
+            ));
+        }
+        let report = fail_closed_connect(&intent, now_ms, cancellation);
+        if report.error.is_some() {
+            self.emit(UltimateRemoteEvent {
+                kind: UltimateRemoteEventKind::Error,
+                session_id: Some(context.session_id),
+                correlation_id: Some(context.correlation_id),
+                state: Some(UltimateRemoteSessionState::Failed),
+                error: Some(UltimateRemoteError::new(
+                    UltimateRemoteErrorCode::Internal,
+                    "Network connection failed",
+                )),
+            })?;
+        } else {
+            self.emit(UltimateRemoteEvent {
+                kind: UltimateRemoteEventKind::Connected,
+                session_id: Some(context.session_id),
+                correlation_id: Some(context.correlation_id),
+                state: Some(UltimateRemoteSessionState::Connected),
+                error: None,
+            })?;
+        }
+        Ok(report)
+    }
+
     pub fn stop_session(
         &self,
         session_id: &str,
@@ -446,6 +520,7 @@ impl<B: RustDeskCoreBoundary> UltimateRemoteRustAdapter<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ultimate_remote_network::NetworkErrorCode;
 
     fn context() -> UltimateRemoteSessionContext {
         UltimateRemoteSessionContext {
@@ -489,6 +564,38 @@ mod tests {
         assert_eq!(
             adapter.create_session(context()).unwrap_err().code,
             UltimateRemoteErrorCode::InvalidSessionState
+        );
+    }
+
+    #[test]
+    fn networking_requires_matching_authorized_session_context() {
+        let adapter = UltimateRemoteRustAdapter::new(Arc::new(LocalCoreBoundary::default()));
+        adapter.initialize().expect("initialize");
+        adapter.create_session(context()).expect("create");
+        let intent = ConnectionIntent {
+            session_id: "session-1".into(),
+            organization_id: "tenant-1".into(),
+            user_id: "user-1".into(),
+            target_device_id: "target-1".into(),
+            correlation_id: "correlation-1".into(),
+            deadline_at_ms: 10_000,
+            backend_authorized: true,
+        };
+        let report = adapter
+            .connect_network(intent.clone(), 1_000, &CancellationToken::default())
+            .expect("network report");
+        assert_eq!(
+            report.error.as_ref().unwrap().code,
+            NetworkErrorCode::RendezvousUnavailable
+        );
+        let mut mismatched = intent;
+        mismatched.target_device_id = "other-target".into();
+        assert_eq!(
+            adapter
+                .connect_network(mismatched, 1_000, &CancellationToken::default())
+                .unwrap_err()
+                .code,
+            UltimateRemoteErrorCode::AuthorizationRequired
         );
     }
 
