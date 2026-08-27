@@ -30,6 +30,9 @@ import 'package:window_size/window_size.dart' as window_size;
 
 import '../consts.dart';
 import 'common/widgets/overlay.dart';
+import 'foundation/design_tokens.dart';
+import 'foundation/localization_foundation.dart';
+import 'foundation/product_identity.dart';
 import 'mobile/pages/file_manager_page.dart';
 import 'mobile/pages/remote_page.dart';
 import 'mobile/pages/view_camera_page.dart';
@@ -465,6 +468,7 @@ class MyTheme {
   ).copyWith(
     extensions: <ThemeExtension<dynamic>>[
       ColorThemeExtension.light,
+      UltimateThemeExtension.light,
       TabbarTheme.light,
     ],
   );
@@ -572,6 +576,7 @@ class MyTheme {
   ).copyWith(
     extensions: <ThemeExtension<dynamic>>[
       ColorThemeExtension.dark,
+      UltimateThemeExtension.dark,
       TabbarTheme.dark,
     ],
   );
@@ -644,8 +649,8 @@ final ButtonStyle flatButtonStyle = TextButton.styleFrom(
   ),
 );
 
-List<Locale> supportedLocales = const [
-  Locale('en', 'US'),
+List<Locale> supportedLocales = [
+  ...RemoteLocalization.coreLocales,
   Locale('zh', 'CN'),
   Locale('zh', 'TW'),
   Locale('zh', 'SG'),
@@ -685,7 +690,6 @@ List<Locale> supportedLocales = const [
   Locale('ro'),
   Locale('lt'),
   Locale('lv'),
-  Locale('ar'),
   Locale('he'),
   Locale('hr'),
 ];
@@ -3034,7 +3038,7 @@ int versionCmp(String v1, String v2) {
 }
 
 String getWindowName({WindowType? overrideType}) {
-  final name = bind.mainGetAppNameSync();
+  final name = ProductIdentity.productName;
   switch (overrideType ?? kWindowType) {
     case WindowType.Main:
       return name;
