@@ -1,0 +1,111 @@
+name: PHASE 21 Client Validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - phase14-api-contracts
+
+permissions:
+  contents: read
+
+jobs:
+  flutter:
+    name: Flutter foundation validation
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: 3.24.5
+          channel: stable
+          cache: true
+
+      - name: Flutter dependencies
+        working-directory: flutter
+        run: flutter pub get
+
+      - name: Flutter analyze
+        working-directory: flutter
+        run: flutter analyze --no-fatal-warnings --no-fatal-infos
+
+      - name: Flutter tests
+        working-directory: flutter
+        run: flutter test
+
+  rust-ffi:
+    name: Rust and FFI validation
+    runs-on: ubuntu-24.04
+    env:
+      VCPKG_COMMIT_ID: 9e593bb18ea69cc5095e012465dcd675a822ed0d
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install native prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake curl gcc g++ libasound2-dev libunwind-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgtk-3-dev libpulse-dev libva-dev libvdpau-dev libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxdo-dev libxfixes-dev nasm wget
+
+      - name: Setup VCPKG
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
+        with:
+          vcpkgDirectory: /opt/artifacts/vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+
+      - name: Install VCPKG dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${VCPKG_ROOT:-}"
+          "$VCPKG_ROOT/vcpkg" install --x-install-root="$VCPKG_ROOT/installed"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: 1.75.0
+          components: rustfmt
+
+      - name: Rust check
+        run: cargo check --locked --features flutter
+
+      - name: Rust tests
+        run: cargo test --locked --lib --features flutter
+
+  security:
+    name: Client security and workflow checks
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Secret pattern guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -n -I -E 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,}|xox[baprs]-' -- ':!.github/workflows/phase21-validation.yml'; then
+            echo 'high-confidence secret pattern detected'
+            exit 1
+          fi
+
+      - name: Workflow permission guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q '^permissions:$' .github/workflows/phase21-validation.yml
+          grep -q '^  contents: read$' .github/workflows/phase21-validation.yml
+          if git grep -n -I 'pull_request_target:' -- .github/workflows; then
+            echo 'pull_request_target requires separate privileged-workflow review'
+            exit 1
+          fi
+
+      - name: Rust and Dart formatting checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt --check src/ultimate_remote_network.rs src/ultimate_remote_adapter.rs
+          dart format --output=none --set-exit-if-changed flutter/lib/foundation flutter/test/foundation
