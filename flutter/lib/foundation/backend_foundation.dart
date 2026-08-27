@@ -5,21 +5,25 @@ class RemoteApiRequest {
     required this.method,
     required this.path,
     this.body,
+    this.headers = const <String, String>{},
   });
 
   final String method;
   final String path;
   final Object? body;
+  final Map<String, String> headers;
 }
 
 class RemoteApiResponse {
   const RemoteApiResponse({
     required this.statusCode,
     this.body,
+    this.headers = const <String, String>{},
   });
 
   final int statusCode;
   final Object? body;
+  final Map<String, String> headers;
 
   bool get isSuccessful => statusCode >= 200 && statusCode < 300;
 }

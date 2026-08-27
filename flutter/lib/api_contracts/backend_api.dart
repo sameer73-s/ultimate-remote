@@ -243,9 +243,15 @@ class BackendApiClient {
     String method,
     String path, {
     Object? body,
+    Map<String, String> headers = const <String, String>{},
   }) async {
     final response = await backend.send(
-      RemoteApiRequest(method: method, path: path, body: body),
+      RemoteApiRequest(
+        method: method,
+        path: path,
+        body: body,
+        headers: headers,
+      ),
     );
     if (!response.isSuccessful) {
       throw ApiError.fromResponse(response);
