@@ -96,6 +96,17 @@ jobs:
           toolchain: 1.75.0
           components: rustfmt
 
+      - name: Setup Flutter for bridge generation
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: 3.24.5
+          channel: stable
+          cache: true
+
+      - name: Flutter dependencies for bridge generation
+        working-directory: flutter
+        run: flutter pub get
+
       - name: Install bridge generator
         shell: bash
         run: |
