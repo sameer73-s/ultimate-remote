@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
 
       - name: Setup Flutter
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
@@ -66,6 +68,8 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
 
       - name: Install native prerequisites
         run: |
@@ -123,6 +127,19 @@ jobs:
             echo 'pull_request_target requires separate privileged-workflow review'
             exit 1
           fi
+
+      - name: Setup Flutter tooling
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: 3.24.5
+          channel: stable
+          cache: true
+
+      - name: Setup Rust formatting toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: 1.75.0
+          components: rustfmt
 
       - name: Rust and Dart formatting checks
         shell: bash
