@@ -75,7 +75,7 @@ jobs:
       - name: Install native prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake curl gcc g++ libasound2-dev libunwind-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgtk-3-dev libpulse-dev libva-dev libvdpau-dev libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxdo-dev libxfixes-dev nasm wget
+          sudo apt-get install -y clang cmake curl gcc g++ libasound2-dev libunwind-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgtk-3-dev libpulse-dev libva-dev libvdpau-dev libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxdo-dev libxfixes-dev nasm wget xvfb
 
       - name: Setup VCPKG
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
@@ -125,7 +125,7 @@ jobs:
         run: cargo check --locked --features flutter
 
       - name: Rust tests
-        run: cargo test --locked --lib --features flutter
+        run: xvfb-run -a cargo test --locked --lib --features flutter
 
   security:
     name: Client security and workflow checks
