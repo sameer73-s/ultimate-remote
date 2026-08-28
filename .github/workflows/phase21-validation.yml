@@ -202,7 +202,7 @@ jobs:
           sha256sum phase22-artifact/rustdesk-linux-x86_64-bundle.tar.gz | tee phase22-artifact/SHA256SUMS
           file flutter/build/linux/x64/release/bundle/rustdesk | tee phase22-artifact/BINARY_FILE
           stat -c 'binary_size_bytes=%s' flutter/build/linux/x64/release/bundle/rustdesk | tee -a phase22-artifact/BINARY_FILE
-          printf 'client_sha=%s\\nrun_id=%s\\nworkflow=%s\\nbranch=%s\\ntarget=linux-x86_64\\nflutter=%s\\nrust=%s\\nfrb=%s\\nvcpkg=%s\\n' "${GITHUB_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_WORKFLOW}" "${GITHUB_REF_NAME}" "${FLUTTER_VERSION}" "${RUST_VERSION}" "${FRB_VERSION}" "${VCPKG_COMMIT_ID}" > phase22-artifact/BUILD_METADATA
+          printf 'client_sha=%s\nrun_id=%s\nworkflow=%s\nbranch=%s\ntarget=linux-x86_64\nflutter=%s\nrust=%s\nfrb=%s\nvcpkg=%s\n' "${GITHUB_SHA}" "${GITHUB_RUN_ID}" "${GITHUB_WORKFLOW}" "${GITHUB_REF_NAME}" "${FLUTTER_VERSION}" "${RUST_VERSION}" "${FRB_VERSION}" "${VCPKG_COMMIT_ID}" > phase22-artifact/BUILD_METADATA
 
       - name: Upload compiled artifact evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
